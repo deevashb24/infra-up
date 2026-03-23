@@ -1,0 +1,23 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Uttar Pradesh"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.0, 23.5],
+            [84.5, 23.5],
+            [84.5, 30.3],
+            [77.0, 30.3],
+            [77.0, 23.5]
+          ]
+        ]
+      }
+    }
+  ]
+}
