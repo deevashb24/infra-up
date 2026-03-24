@@ -3,7 +3,8 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { MapPin, X, Info, Hammer, AlertTriangle, Moon, Sun, Map as MapIcon, Flag } from "lucide-react";
+import { MapPin, X, Info, Hammer, AlertTriangle, Moon, Sun, Map as MapIcon, Flag, LayoutDashboard } from "lucide-react";
+import Link from "next/link";
 
 // FIX #5: Pull API base URL from env so nothing hardcodes localhost.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -515,6 +516,14 @@ export default function InfraMap() {
 
       {/* ===== Floating Top Right Controls ===== */}
       <div className="absolute top-4 right-4 sm:top-6 sm:right-6 z-20 flex gap-2 flex-col sm:flex-row">
+        <Link
+            href="/dashboard"
+            className="px-4 py-2 bg-blue-600/90 hover:bg-blue-500 backdrop-blur-xl rounded-xl shadow-lg border border-blue-500/40 transition-all active:scale-95 flex items-center justify-center gap-2 font-bold text-sm text-white"
+            aria-label="Open Dashboard"
+        >
+            <LayoutDashboard size={16} />
+            <span className="hidden sm:inline">Dashboard</span>
+        </Link>
         <button 
             onClick={() => setLang(lang === 'EN' ? 'HI' : 'EN')}
             className="px-4 py-2 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl rounded-xl shadow-lg border border-white/20 dark:border-slate-700/50 hover:bg-white dark:hover:bg-slate-800 transition-all active:scale-95 flex items-center justify-center font-bold text-sm"
