@@ -5,8 +5,11 @@ import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapPin, X, Info, Hammer, AlertTriangle, Moon, Sun, Map as MapIcon, Flag } from "lucide-react";
 
+// FIX #5: Pull API base URL from env so nothing hardcodes localhost.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 // Placeholder for user to inject their Mapbox token
-const MAPBOX_TOKEN = "YOUR_MAPBOX_ACCESS_TOKEN"; 
+const MAPBOX_TOKEN = "YOUR_MAPBOX_ACCESS_TOKEN";
 
 interface PermitProperties {
   id: string;
@@ -151,6 +154,9 @@ const DICT = {
 export default function InfraMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // FIX #9: Store addCustomLayers in a ref so the style.load listener always
+  // invokes the latest version (avoids stale closure after theme toggle).
+  const addCustomLayersRef = useRef<() => void>(() => {});
   
   // State
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -165,10 +171,13 @@ export default function InfraMap() {
   // Citizen Report Modal
   const [reportOpen, setReportOpen] = useState(false);
   const [reportText, setReportText] = useState("");
+  // FIX #11: Track submit state so we can show feedback while posting.
+  const [reportStatus, setReportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
 
   const t = DICT[lang];
 
-  // MapLibre Dynamic Layer Re-injector
+  // FIX #9: Keep the ref in sync with the latest closure so style.load always
+  // uses the freshest version regardless of when it fires.
   const addCustomLayers = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -268,7 +277,12 @@ export default function InfraMap() {
       }
     });
 
-  }, [theme]); 
+  }, [theme]);
+
+  // FIX #9: Keep ref pointing at the latest addCustomLayers after every render.
+  useEffect(() => {
+    addCustomLayersRef.current = addCustomLayers;
+  }, [addCustomLayers]);
 
   // Mount Map
   useEffect(() => {
@@ -297,7 +311,9 @@ export default function InfraMap() {
     mapRef.current = map;
 
     map.once('load', () => setMapLoaded(true));
-    map.on('style.load', () => addCustomLayers());
+    // FIX #9: Use the ref so style.load always calls the latest addCustomLayers,
+    // even after theme changes that would otherwise capture a stale closure.
+    map.on('style.load', () => addCustomLayersRef.current());
 
     map.on('click', 'clusters', async (e) => {
       const features = map.queryRenderedFeatures(e.point, { layers: ['clusters'] });
@@ -345,9 +361,9 @@ export default function InfraMap() {
     mapRef.current.setStyle(MAPBOX_TOKEN !== "YOUR_MAPBOX_ACCESS_TOKEN" ? styleUrl : fallbackStyle);
   }, [theme, mapLoaded]);
 
-  // Subscribe to PostgreSQL Notifications via FastAPI SSE
+  // FIX #5: Use API_BASE so SSE works in any environment, not just localhost.
   useEffect(() => {
-    const eventSource = new EventSource("http://localhost:8000/api/alerts/stream");
+    const eventSource = new EventSource(`${API_BASE}/api/alerts/stream`);
     eventSource.onmessage = (event) => {
         if (event.data === "keep-alive") return;
         try {
@@ -371,10 +387,40 @@ export default function InfraMap() {
     }
   };
 
+  // FIX #8: CONSTRUCTION was incorrectly mapped to t.electric ("Electrical Works").
+  // Each type now maps to its correct translation key.
+  // FIX #11: Actually POST the report to the backend instead of silently discarding it.
+  // Uses the map center as the default location when no specific pin is selected.
+  const handleReportSubmit = async () => {
+    if (!reportText.trim()) return;
+    setReportStatus("loading");
+    const center = mapRef.current?.getCenter() ?? { lng: 80.9462, lat: 26.8467 };
+    try {
+      const res = await fetch(`${API_BASE}/reports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description: reportText,
+          longitude: center.lng,
+          latitude: center.lat,
+        }),
+      });
+      if (res.ok) {
+        setReportStatus("success");
+        setReportText("");
+        setTimeout(() => { setReportStatus("idle"); setReportOpen(false); }, 1500);
+      } else {
+        setReportStatus("error");
+      }
+    } catch {
+      setReportStatus("error");
+    }
+  };
+
   const getTranslatedType = (typeRaw: string) => {
     if (typeRaw === 'ROAD') return t.road;
-    if (typeRaw === 'UTILITY') return t.water; // mapped to generic mock
-    if (typeRaw === 'CONSTRUCTION') return t.electric;
+    if (typeRaw === 'UTILITY') return t.electric;
+    if (typeRaw === 'CONSTRUCTION') return t.road; // Construction → Road/Building works
     return typeRaw;
   };
 
@@ -509,12 +555,26 @@ export default function InfraMap() {
                     placeholder={t.describeIssue}
                     className="w-full h-32 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 resize-none text-sm font-medium"
                   ></textarea>
+                  {/* FIX #11: Show loading/error/success feedback on submit. */}
+                  {reportStatus === "error" && (
+                    <p className="text-rose-500 text-xs font-bold mt-2">Submission failed. Please try again.</p>
+                  )}
+                  {reportStatus === "success" && (
+                    <p className="text-emerald-500 text-xs font-bold mt-2">Report submitted successfully!</p>
+                  )}
                   <div className="mt-6 flex gap-3">
-                      <button onClick={() => setReportOpen(false)} className="flex-1 py-3 px-4 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition">
+                      <button
+                        onClick={() => { setReportOpen(false); setReportStatus("idle"); setReportText(""); }}
+                        className="flex-1 py-3 px-4 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                      >
                           {t.cancel}
                       </button>
-                      <button onClick={() => { setReportText(""); setReportOpen(false); }} className="flex-1 py-3 px-4 rounded-xl font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-500/20 transition">
-                          {t.submit}
+                      <button
+                        onClick={handleReportSubmit}
+                        disabled={reportStatus === "loading" || !reportText.trim()}
+                        className="flex-1 py-3 px-4 rounded-xl font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                          {reportStatus === "loading" ? "Submitting..." : t.submit}
                       </button>
                   </div>
               </div>

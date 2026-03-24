@@ -15,6 +15,9 @@ const UP_AUTHORITIES = [
 ];
 
 export default function AddProjectForm() {
+    // FIX #5: Use env var so this works beyond localhost.
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
     const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
     const [authority, setAuthority] = useState(UP_AUTHORITIES[0]);
     const [title, setTitle] = useState("");
@@ -29,7 +32,7 @@ export default function AddProjectForm() {
         setStatus("loading");
         
         try {
-            const response = await fetch("http://localhost:8000/admin/ingest", {
+            const response = await fetch(`${API_BASE}/admin/ingest`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

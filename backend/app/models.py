@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Enum, DateTime, func, Boolean, ForeignKey
+from sqlalchemy import Column, String, Enum, DateTime, Float, func, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from geoalchemy2 import Geometry
 from sqlalchemy.orm import relationship
@@ -46,14 +46,16 @@ class InfrastructureProject(Base):
     end_date = Column(DateTime, nullable=True)
     impact_level = Column(Enum(ImpactEnum), default=ImpactEnum.MEDIUM)
     is_verified = Column(Boolean, default=False)
+    # FIX #4: Add budget column so ingested budget values are actually stored.
+    budget = Column(Float, nullable=True)
 
 class Report(Base):
     __tablename__ = "reports"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     description = Column(String)
     geometry = Column(Geometry('POINT', srid=4326))
-    category = Column(String, default='Safety Hazard') # specific for the citizen form
+    category = Column(String, default='Safety Hazard')
     severity = Column(String, default='High')
     created_at = Column(DateTime, default=func.now())
 
@@ -62,15 +64,14 @@ class Report(Base):
 class UserSubscription(Base):
     __tablename__ = 'user_subscriptions'
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # user_id = Column(UUID, ForeignKey('users.id')) # Ignored for this phase mock
-    name = Column(String) 
-    geometry = Column(Geometry('GEOMETRY', srid=4326)) 
+    name = Column(String)
+    geometry = Column(Geometry('GEOMETRY', srid=4326))
     created_at = Column(DateTime, default=func.now())
 
 class UPHighwayCorridor(Base):
     __tablename__ = 'up_highway_corridors'
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String, index=True) 
+    name = Column(String, index=True)
     geometry = Column(Geometry('LINESTRING', srid=4326))
 
 class Alert(Base):
@@ -78,6 +79,6 @@ class Alert(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey('infrastructure_projects.id'))
     message = Column(String)
-    trigger_type = Column(String) 
+    trigger_type = Column(String)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=func.now())

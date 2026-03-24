@@ -2,10 +2,24 @@ from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
-# Database connection
+# FIX #10: Expose a psycopg2-safe URL for the raw LISTEN/NOTIFY connection.
+# Strips any async driver prefix (e.g. postgresql+asyncpg://) so psycopg2.connect()
+# never receives an incompatible URL.
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/civic_tech")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+def _make_psycopg2_url(url: str) -> str:
+    """Normalise any SQLAlchemy async-driver URL to a plain psycopg2-compatible one."""
+    for prefix in ("postgresql+asyncpg://", "postgres+asyncpg://"):
+        if url.startswith(prefix):
+            return "postgresql://" + url[len(prefix):]
+    # Also handle 'postgres://' shorthand (e.g. Heroku / Railway)
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+RAW_DATABASE_URL = _make_psycopg2_url(SQLALCHEMY_DATABASE_URL)
+
+engine = create_engine(RAW_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
