@@ -48,6 +48,9 @@ class InfrastructureProject(Base):
     is_verified = Column(Boolean, default=False)
     # FIX #4: Add budget column so ingested budget values are actually stored.
     budget = Column(Float, nullable=True)
+    contractor = Column(String, nullable=True)
+    completion_percent = Column(Float, default=0)
+    division = Column(String, nullable=True)
 
 class Report(Base):
     __tablename__ = "reports"

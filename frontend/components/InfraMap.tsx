@@ -3,16 +3,14 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { MapPin, X, Info, Hammer, AlertTriangle, Moon, Sun, Map as MapIcon, Flag, LayoutDashboard } from "lucide-react";
+import { MapPin, X, Info, Hammer, AlertTriangle, Moon, Sun, Map as MapIcon, Flag, LayoutDashboard, Loader2 } from "lucide-react";
 import Link from "next/link";
 
-// FIX #5: Pull API base URL from env so nothing hardcodes localhost.
+// Pull API base URL from env so nothing hardcodes localhost.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// Carto's glyph server returns PBF type 4 (Devanagari/complex script) which
-// MapLibre 5.x cannot parse, producing console warnings for every character.
-// Fix: fetch the style JSON, replace the glyphs URL with the free MapLibre demo
-// tiles server that serves the correct SDF format, then pass the patched object.
+// Carto's glyph server returns PBF type 4 which MapLibre 5.x cannot parse.
+// Fix: fetch the style JSON, replace the glyphs URL with the free MapLibre demo tiles server.
 const GLYPH_URL = 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf';
 
 async function fetchPatchedStyle(theme: "dark" | "light"): Promise<object> {
@@ -25,9 +23,6 @@ async function fetchPatchedStyle(theme: "dark" | "light"): Promise<object> {
   return style;
 }
 
-// Placeholder for user to inject their Mapbox token
-const MAPBOX_TOKEN = "YOUR_MAPBOX_ACCESS_TOKEN";
-
 interface PermitProperties {
   id: string;
   title: string;
@@ -39,6 +34,8 @@ interface PermitProperties {
   project_authority: string;
   district: string;
   impactLevel: string;
+  budget: number;
+  completion_percent: number;
   cluster_id?: number;
 }
 
@@ -62,59 +59,9 @@ const DISTRICTS = [
   { name: "Noida", lng: 77.3910, lat: 28.5355 }
 ];
 
-const LUCKNOW_LOCATIONS = ["Hazratganj", "Gomti Nagar", "Alambagh", "Amausi", "Shaheed Path", "Ring Road", "Vikas Nagar", "Indira Nagar", "Chinhat", "Mahanagar"];
 const AUTHORITIES = ['LDA', 'LMC', 'NHAI', 'PWD_UP', 'UPLCL', 'Jal Nigam', 'UPSIDA', 'Smart City Lucknow'];
 
-const lucknowFeatures = Array.from({ length: 30 }).map((_, i) => {
-  const lng = 80.85 + Math.random() * 0.2; 
-  const lat = 26.75 + Math.random() * 0.2; 
-  const types = ["CONSTRUCTION", "ROAD", "UTILITY"];
-  const type = types[Math.floor(Math.random() * types.length)];
-  const status = Math.random() > 0.3 ? "ACTIVE" : "PENDING";
-  const authority = AUTHORITIES[Math.floor(Math.random() * AUTHORITIES.length)];
-  return {
-    type: "Feature",
-    geometry: { type: "Point", coordinates: [lng, lat] },
-    properties: {
-      id: `PRJ-LKO-${1000 + i}`,
-      title: `${LUCKNOW_LOCATIONS[i % LUCKNOW_LOCATIONS.length]} Project ${i + 1}`,
-      permitType: type,
-      status: status,
-      startDate: "2026-03-01",
-      endDate: "2026-12-01",
-      contractor: authority,
-      project_authority: authority,
-      district: "Lucknow",
-      impactLevel: "MEDIUM"
-    }
-  };
-});
-
-const extraFeatures = DISTRICTS.slice(1, 6).map((city, i) => {
-    return {
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [city.lng, city.lat] },
-      properties: {
-        id: `PRJ-UP-${2000 + i}`,
-        title: `${city.name} Highway Upgrade`,
-        permitType: "ROAD",
-        status: "ACTIVE",
-        startDate: "2026-01-15",
-        endDate: "2027-06-30",
-        contractor: "NHAI",
-        project_authority: "NHAI",
-        district: city.name,
-        impactLevel: "HIGH"
-      }
-    };
-});
-
-const MOCK_PERMITS = {
-  type: "FeatureCollection",
-  features: [...lucknowFeatures, ...extraFeatures]
-} as GeoJSON.FeatureCollection;
-
-// Language Dictionary mapped for Noto Sans Devanagari translation layer
+// Language Dictionary
 const DICT = {
   EN: {
     road: 'Road Construction',
@@ -139,7 +86,12 @@ const DICT = {
     affectedRoutes: 'Affected Routes',
     intersecting: 'This project intersects with 12 active commuter routes.',
     authority: 'Authority',
-    reportTitle: 'Citizen Safety Report'
+    reportTitle: 'Citizen Safety Report',
+    budget: 'Budget',
+    contractor: 'Contractor',
+    progress: 'Progress',
+    loadingData: 'Loading live project data...',
+    errorData: 'Failed to load data. Showing cached view.',
   },
   HI: {
     road: 'सड़क निर्माण',
@@ -164,15 +116,18 @@ const DICT = {
     affectedRoutes: 'प्रभावित मार्ग',
     intersecting: 'यह प्रोजेक्ट 12 सक्रिय मार्गों को प्रभावित करता है।',
     authority: 'प्राधिकरण',
-    reportTitle: 'नागरिक सुरक्षा रिपोर्ट'
+    reportTitle: 'नागरिक सुरक्षा रिपोर्ट',
+    budget: 'बजट',
+    contractor: 'ठेकेदार',
+    progress: 'प्रगति',
+    loadingData: 'लाइव डेटा लोड हो रहा है...',
+    errorData: 'डेटा लोड करने में विफल।',
   }
 };
 
 export default function InfraMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  // FIX #9: Store addCustomLayers in a ref so the style.load listener always
-  // invokes the latest version (avoids stale closure after theme toggle).
   const addCustomLayersRef = useRef<() => void>(() => {});
   
   // State
@@ -182,19 +137,58 @@ export default function InfraMap() {
   const [mapLoaded, setMapLoaded] = useState(false);
   const [selectedDistrict, setSelectedDistrict] = useState("Lucknow");
   
-  // SSE Tost Notifications Stack
+  // Live data from API
+  const [permits, setPermits] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [dataLoading, setDataLoading] = useState(true);
+  const [dataError, setDataError] = useState(false);
+  
+  // SSE Toast Notifications Stack
   const [toasts, setToasts] = useState<{id: number, data: AlertPayload}[]>([]);
   
   // Citizen Report Modal
   const [reportOpen, setReportOpen] = useState(false);
   const [reportText, setReportText] = useState("");
-  // FIX #11: Track submit state so we can show feedback while posting.
   const [reportStatus, setReportStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
 
   const t = DICT[lang];
 
-  // FIX #9: Keep the ref in sync with the latest closure so style.load always
-  // uses the freshest version regardless of when it fires.
+  // ── Fetch live projects from API ──────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchProjects() {
+      setDataLoading(true);
+      setDataError(false);
+      try {
+        const res = await fetch(`${API_BASE}/projects`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) {
+          setPermits(data);
+          setDataLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to fetch projects:", err);
+        if (!cancelled) {
+          setDataError(true);
+          setDataLoading(false);
+        }
+      }
+    }
+    fetchProjects();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Update map source when data changes ───────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || !permits) return;
+    const map = mapRef.current;
+    if (!map.isStyleLoaded()) return;
+    const src = map.getSource('permits') as maplibregl.GeoJSONSource | undefined;
+    if (src) {
+      src.setData(permits);
+    }
+  }, [permits]);
+
   const addCustomLayers = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -236,9 +230,12 @@ export default function InfraMap() {
       );
     }
 
+    // Use live data if available, otherwise empty collection
+    const sourceData = permits || { type: "FeatureCollection" as const, features: [] };
+
     map.addSource('permits', {
       type: 'geojson',
-      data: MOCK_PERMITS,
+      data: sourceData,
       cluster: true,
       clusterMaxZoom: 14,
       clusterRadius: 50
@@ -294,9 +291,8 @@ export default function InfraMap() {
       }
     });
 
-  }, [theme]);
+  }, [theme, permits]);
 
-  // FIX #9: Keep ref pointing at the latest addCustomLayers after every render.
   useEffect(() => {
     addCustomLayersRef.current = addCustomLayers;
   }, [addCustomLayers]);
@@ -306,8 +302,6 @@ export default function InfraMap() {
     if (!mapContainer.current) return;
     if (mapRef.current) return;
 
-    // Fetch Carto style with glyphs URL patched to demotiles (correct SDF format,
-    // no key required) before passing to MapLibre to silence Devanagari glyph errors.
     fetchPatchedStyle(theme).then(mapStyle => {
     if (!mapContainer.current) return;
 
@@ -326,8 +320,6 @@ export default function InfraMap() {
     mapRef.current = map;
 
     map.once('load', () => setMapLoaded(true));
-    // FIX #9: Use the ref so style.load always calls the latest addCustomLayers,
-    // even after theme changes that would otherwise capture a stale closure.
     map.on('style.load', () => addCustomLayersRef.current());
 
     map.on('click', 'clusters', async (e) => {
@@ -365,7 +357,7 @@ export default function InfraMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Theme Sync — also patch glyphs URL on theme change
+  // Theme Sync
   useEffect(() => {
     if (!mapRef.current || !mapLoaded) return;
     fetchPatchedStyle(theme).then(mapStyle => {
@@ -375,9 +367,7 @@ export default function InfraMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theme, mapLoaded]);
 
-
-
-  // FIX #5: Use API_BASE so SSE works in any environment, not just localhost.
+  // SSE Alert Stream
   useEffect(() => {
     const eventSource = new EventSource(`${API_BASE}/api/alerts/stream`);
     eventSource.onmessage = (event) => {
@@ -386,6 +376,11 @@ export default function InfraMap() {
             const data = JSON.parse(event.data);
             const newToast = { id: Date.now(), data };
             setToasts(prev => [...prev, newToast]);
+            // Re-fetch projects when a new one is added
+            fetch(`${API_BASE}/projects`)
+              .then(r => r.json())
+              .then(d => setPermits(d))
+              .catch(() => {});
             setTimeout(() => {
                 setToasts(prev => prev.filter(t => t.id !== newToast.id));
             }, 6000);
@@ -403,10 +398,6 @@ export default function InfraMap() {
     }
   };
 
-  // FIX #8: CONSTRUCTION was incorrectly mapped to t.electric ("Electrical Works").
-  // Each type now maps to its correct translation key.
-  // FIX #11: Actually POST the report to the backend instead of silently discarding it.
-  // Uses the map center as the default location when no specific pin is selected.
   const handleReportSubmit = async () => {
     if (!reportText.trim()) return;
     setReportStatus("loading");
@@ -436,7 +427,7 @@ export default function InfraMap() {
   const getTranslatedType = (typeRaw: string) => {
     if (typeRaw === 'ROAD') return t.road;
     if (typeRaw === 'UTILITY') return t.electric;
-    if (typeRaw === 'CONSTRUCTION') return t.road; // Construction → Road/Building works
+    if (typeRaw === 'CONSTRUCTION') return t.road;
     return typeRaw;
   };
 
@@ -446,7 +437,7 @@ export default function InfraMap() {
       <div ref={mapContainer} className="absolute inset-0 w-full h-full bg-slate-100 dark:bg-slate-900 transition-colors" />
       
       {/* ===== GLOBAL LOADING STATE ===== */}
-      {!mapLoaded && (
+      {(!mapLoaded || dataLoading) && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-md transition-opacity duration-1000">
            <div className="flex flex-col items-center gap-6">
               <div className="relative flex items-center justify-center">
@@ -455,15 +446,20 @@ export default function InfraMap() {
                   <MapPin size={28} className="text-white animate-bounce" />
               </div>
               <p className="text-white font-black tracking-[0.2em] uppercase text-sm animate-pulse shadow-black drop-shadow-md">
-                 {lang === 'EN' ? 'Initializing Lucknow PostGIS...' : 'लखनऊ इन्फ्रास्ट्रक्चर लोड हो रहा है...'}
+                 {dataLoading ? t.loadingData : (lang === 'EN' ? 'Initializing Lucknow PostGIS...' : 'लखनऊ इन्फ्रास्ट्रक्चर लोड हो रहा है...')}
               </p>
            </div>
         </div>
       )}
+
+      {/* ===== DATA ERROR BANNER ===== */}
+      {dataError && !dataLoading && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-rose-600/90 backdrop-blur-xl text-white px-6 py-3 rounded-xl shadow-lg flex items-center gap-3 font-bold text-sm">
+          <AlertTriangle size={18} /> {t.errorData}
+        </div>
+      )}
       
-      {/* 
-        ===== NOTIFICATIONS STACK (SSE Toasts) =====
-      */}
+      {/* NOTIFICATIONS STACK (SSE Toasts) */}
       <div className="absolute top-20 right-6 z-50 flex flex-col gap-3 pointer-events-none">
         {toasts.map((toast) => (
             <div key={toast.id} className={`bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl p-4 rounded-xl shadow-2xl border-l-4 border-blue-500 w-80 transform transition-all duration-500 ease-out translate-x-0 opacity-100`}>
@@ -579,7 +575,6 @@ export default function InfraMap() {
                     placeholder={t.describeIssue}
                     className="w-full h-32 p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 resize-none text-sm font-medium"
                   ></textarea>
-                  {/* FIX #11: Show loading/error/success feedback on submit. */}
                   {reportStatus === "error" && (
                     <p className="text-rose-500 text-xs font-bold mt-2">Submission failed. Please try again.</p>
                   )}
@@ -621,7 +616,7 @@ export default function InfraMap() {
                         {selectedPermit.title}
                     </h2>
                     <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-1 transition-colors">
-                        <Info size={14} /> ID: {selectedPermit.id}
+                        <Info size={14} /> ID: {selectedPermit.id?.substring(0, 8)}...
                     </p>
                 </div>
                 <button onClick={() => setSelectedPermit(null)} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
@@ -654,8 +649,29 @@ export default function InfraMap() {
                             <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 transition-colors">{t.impactLevel}</p>
                             <p className="font-semibold text-rose-500">{selectedPermit.impactLevel}</p>
                         </div>
+                        <div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 transition-colors">{t.budget}</p>
+                            <p className="font-semibold text-emerald-600 dark:text-emerald-400">₹{selectedPermit.budget} Cr</p>
+                        </div>
+                        <div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mb-1 transition-colors">{t.contractor}</p>
+                            <p className="font-semibold text-sm">{selectedPermit.contractor || selectedPermit.project_authority}</p>
+                        </div>
                     </div>
                 </div>
+
+                {/* Progress Bar */}
+                {selectedPermit.completion_percent > 0 && (
+                  <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700/50">
+                    <div className="flex justify-between items-end mb-2">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">{t.progress}</h4>
+                      <span className="text-lg font-black text-blue-600 dark:text-blue-400">{selectedPermit.completion_percent}%</span>
+                    </div>
+                    <div className="w-full h-3 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-1000" style={{ width: `${selectedPermit.completion_percent}%` }}></div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-800/30 transition-colors">
                      <h4 className="text-xs font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest mb-2 flex items-center gap-2 transition-colors">
@@ -666,9 +682,9 @@ export default function InfraMap() {
             </div>
 
             <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700/50 flex gap-3 transition-colors">
-                <button className="flex-1 bg-blue-600 hover:bg-blue-500 dark:hover:bg-blue-700 text-white py-3 px-4 rounded-xl font-medium shadow-lg shadow-blue-500/20 transition-all active:scale-95">
+                <Link href={`/projects/${selectedPermit.id}`} className="flex-1 bg-blue-600 hover:bg-blue-500 dark:hover:bg-blue-700 text-white py-3 px-4 rounded-xl font-medium shadow-lg shadow-blue-500/20 transition-all active:scale-95 text-center">
                     {t.viewFull}
-                </button>
+                </Link>
             </div>
           </div>
         )}

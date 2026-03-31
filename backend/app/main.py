@@ -14,8 +14,11 @@ import os
 import asyncio
 
 from .database import engine, Base, get_db, RAW_DATABASE_URL # type: ignore
-from .models import InfrastructureProject, Report, StatusEnum # type: ignore
-from .schemas import ProjectResponse, ProjectCreate, ReportCreate, ReportResponse # type: ignore
+from .models import InfrastructureProject, Report, StatusEnum, ProjectTypeEnum # type: ignore
+from .schemas import ( # type: ignore
+    ProjectResponse, ProjectCreate, ReportCreate, ReportResponse,
+    DashboardStats, ReportListItem,
+)
 from .redis_client import get_cached_data, set_cached_data # type: ignore
 
 # Automatically create all tables and apply Postgres Triggers
@@ -35,6 +38,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Helper: extract lon/lat from a PostGIS geometry ─────────────────────────
+def _extract_coords(db: Session, table: str, pk_col: str, pk_val) -> tuple:
+    """Return (lon, lat) for a given row's geometry column."""
+    row = db.execute(
+        text(f"SELECT ST_X(geometry::geometry), ST_Y(geometry::geometry) FROM {table} WHERE {pk_col} = :pk"),
+        {"pk": pk_val},
+    ).first()
+    return (row[0], row[1]) if row else (0.0, 0.0)
+
+
+# ── SSE Alert Stream ────────────────────────────────────────────────────────
 async def db_listen(request: Request):
     """
     FIX #1: Generator now checks client disconnect on each iteration to avoid
@@ -79,17 +93,22 @@ async def stream_alerts(request: Request):
 def health_check():
     return {"status": "ok", "message": "FastAPI is running Phase 4 Alerts"}
 
+
+# ── GET /projects — GeoJSON FeatureCollection ────────────────────────────────
 @app.get("/projects")
 def get_projects(
     bbox: Optional[str] = Query(None, description="Bounding box in format: min_lon,min_lat,max_lon,max_lat"),
+    district: Optional[str] = Query(None),
+    division: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    cache_key = f"projects_bbox_{bbox}" if bbox else "projects_all"
+    cache_key = f"projects_{bbox}_{district}_{division}"
     cached = get_cached_data(cache_key)
     if cached:
         return cached
 
     query = db.query(InfrastructureProject)
+
     if bbox:
         try:
             min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(","))
@@ -101,17 +120,16 @@ def get_projects(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid bbox format. Use min_lon,min_lat,max_lon,max_lat")
 
+    if district:
+        query = query.filter(InfrastructureProject.district == district)
+    if division:
+        query = query.filter(InfrastructureProject.division == division)
+
     projects = query.all()
 
     features = []
     for p in projects:
-        # FIX #2: Scope the geometry extraction to this specific project's geometry
-        # instead of querying the full table and taking first().
-        coords = db.execute(
-            text("SELECT ST_X(geometry::geometry), ST_Y(geometry::geometry) FROM infrastructure_projects WHERE id = :pid"),
-            {"pid": p.id}
-        ).first()
-        lon, lat = (coords[0], coords[1]) if coords else (0.0, 0.0)
+        lon, lat = _extract_coords(db, "infrastructure_projects", "id", p.id)
 
         feature = {
             "type": "Feature",
@@ -119,13 +137,18 @@ def get_projects(
             "properties": {
                 "id": str(p.id),
                 "title": p.title,
-                "permitType": p.permit_type.value,
-                "status": p.status.value,
-                "project_authority": p.project_authority.value,
-                "district": p.district,
-                "impactLevel": p.impact_level.value,
-                "start_date": p.start_date.isoformat() if p.start_date else None,
-                "end_date": p.end_date.isoformat() if p.end_date else None,
+                "permitType": p.permit_type.value if p.permit_type else "CONSTRUCTION",
+                "status": p.status.value if p.status else "PENDING",
+                "project_authority": p.project_authority.value if p.project_authority else "",
+                "contractor": p.contractor or (p.project_authority.value if p.project_authority else ""),
+                "district": p.district or "",
+                "division": p.division or "",
+                "impactLevel": p.impact_level.value if p.impact_level else "MEDIUM",
+                "budget": p.budget or 0,
+                "completion_percent": p.completion_percent or 0,
+                "startDate": p.start_date.isoformat() if p.start_date else None,
+                "endDate": p.end_date.isoformat() if p.end_date else None,
+                "is_verified": p.is_verified or False,
             }
         }
         features.append(feature)
@@ -134,6 +157,55 @@ def get_projects(
     set_cached_data(cache_key, feature_collection, expire=300)
     return feature_collection
 
+
+# ── GET /projects/{id} — single project detail ──────────────────────────────
+@app.get("/projects/{project_id}")
+def get_project_detail(project_id: str, db: Session = Depends(get_db)):
+    project = db.query(InfrastructureProject).filter(
+        InfrastructureProject.id == project_id
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    lon, lat = _extract_coords(db, "infrastructure_projects", "id", project.id)
+
+    # Count citizen reports within 500m of this project
+    report_count = 0
+    try:
+        geom_text = f"POINT({lon} {lat})"
+        report_count = db.query(func.count(Report.id)).filter(
+            func.ST_DWithin(
+                Report.geometry,
+                func.ST_GeomFromText(geom_text, 4326),
+                0.005  # ~500m
+            )
+        ).scalar() or 0
+    except Exception:
+        pass
+
+    return {
+        "id": str(project.id),
+        "title": project.title,
+        "description": project.description,
+        "permitType": project.permit_type.value if project.permit_type else "CONSTRUCTION",
+        "status": project.status.value if project.status else "PENDING",
+        "project_authority": project.project_authority.value if project.project_authority else "",
+        "contractor": project.contractor or (project.project_authority.value if project.project_authority else ""),
+        "district": project.district or "",
+        "division": project.division or "",
+        "impactLevel": project.impact_level.value if project.impact_level else "MEDIUM",
+        "budget": project.budget or 0,
+        "completion_percent": project.completion_percent or 0,
+        "startDate": project.start_date.isoformat() if project.start_date else None,
+        "endDate": project.end_date.isoformat() if project.end_date else None,
+        "is_verified": project.is_verified or False,
+        "longitude": lon,
+        "latitude": lat,
+        "report_count": report_count,
+    }
+
+
+# ── POST /reports ────────────────────────────────────────────────────────────
 @app.post("/reports", response_model=ReportResponse)
 def create_report(report: ReportCreate, db: Session = Depends(get_db)):
     geom = f"POINT({report.longitude} {report.latitude})"
@@ -142,39 +214,106 @@ def create_report(report: ReportCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_report)
 
-    # FIX #3: Scope extraction to the specific report just inserted.
-    coords = db.execute(
-        text("SELECT ST_X(geometry::geometry), ST_Y(geometry::geometry) FROM reports WHERE id = :rid"),
-        {"rid": db_report.id}
-    ).first()
-    lon = coords[0] if coords else report.longitude
-    lat = coords[1] if coords else report.latitude
+    lon, lat = _extract_coords(db, "reports", "id", db_report.id)
 
     return {
         "id": db_report.id,
         "description": db_report.description,
-        "longitude": lon,
-        "latitude": lat
+        "longitude": lon or report.longitude,
+        "latitude": lat or report.latitude,
+        "created_at": db_report.created_at,
+        "category": db_report.category,
+        "severity": db_report.severity,
     }
 
-@app.get("/dashboard/stats")
-def get_dashboard_stats(db: Session = Depends(get_db)):
-    cached = get_cached_data("dashboard_stats")
+
+# ── GET /reports — list all citizen reports ──────────────────────────────────
+@app.get("/reports")
+def list_reports(
+    division: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    cached_key = f"reports_{division}"
+    cached = get_cached_data(cached_key)
     if cached:
         return cached
 
-    total_projects = db.query(func.count(InfrastructureProject.id)).scalar()
-    # FIX #7: Use the enum member, not a plain string, for reliable comparison.
-    active_projects = db.query(func.count(InfrastructureProject.id)).filter(
-        InfrastructureProject.status == StatusEnum.ACTIVE
-    ).scalar()
-    total_reports = db.query(func.count(Report.id)).scalar()
+    reports = db.query(Report).order_by(Report.created_at.desc()).limit(100).all()
 
-    stats = {"total_projects": total_projects, "active_projects": active_projects, "total_reports": total_reports}
-    set_cached_data("dashboard_stats", stats, expire=600)
+    result = []
+    for r in reports:
+        lon, lat = _extract_coords(db, "reports", "id", r.id)
+        result.append({
+            "id": str(r.id),
+            "description": r.description,
+            "category": r.category or "Safety Hazard",
+            "severity": r.severity or "High",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "longitude": lon,
+            "latitude": lat,
+        })
+
+    set_cached_data(cached_key, result, expire=120)
+    return result
+
+
+# ── GET /dashboard/stats — expanded dashboard statistics ─────────────────────
+@app.get("/dashboard/stats")
+def get_dashboard_stats(
+    division: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    cache_key = f"dashboard_stats_{division}"
+    cached = get_cached_data(cache_key)
+    if cached:
+        return cached
+
+    base_q = db.query(InfrastructureProject)
+    if division and division != "All Divisions":
+        base_q = base_q.filter(InfrastructureProject.division == division)
+
+    all_projects = base_q.all()
+
+    total = len(all_projects)
+    active = sum(1 for p in all_projects if p.status == StatusEnum.ACTIVE)
+    delayed = sum(1 for p in all_projects if p.status == StatusEnum.PENDING)
+    total_budget = sum((p.budget or 0) for p in all_projects)
+
+    # Type breakdown
+    type_counts = {}
+    for p in all_projects:
+        t = p.permit_type.value if p.permit_type else "CONSTRUCTION"
+        type_counts[t] = type_counts.get(t, 0) + 1
+    by_type = [{"name": k, "value": v} for k, v in type_counts.items()]
+
+    # Authority breakdown
+    authority_counts: dict = {}
+    for p in all_projects:
+        a = p.project_authority.value if p.project_authority else "Unknown"
+        if a not in authority_counts:
+            authority_counts[a] = {"Active": 0, "Delayed": 0}
+        if p.status == StatusEnum.ACTIVE:
+            authority_counts[a]["Active"] += 1
+        else:
+            authority_counts[a]["Delayed"] += 1
+    by_authority = [{"name": k, **v} for k, v in authority_counts.items()]
+
+    total_reports = db.query(func.count(Report.id)).scalar() or 0
+
+    stats = {
+        "total_projects": total,
+        "active_projects": active,
+        "delayed_count": delayed,
+        "total_budget": total_budget,
+        "total_reports": total_reports,
+        "by_type": by_type,
+        "by_authority": by_authority,
+    }
+    set_cached_data(cache_key, stats, expire=300)
     return stats
 
 
+# ── POST /admin/ingest ───────────────────────────────────────────────────────
 class IngestPayload(BaseModel):
     title: str
     description: Optional[str] = None
@@ -184,6 +323,9 @@ class IngestPayload(BaseModel):
     longitude: float
     latitude: float
     budget: Optional[float] = None
+    contractor: Optional[str] = None
+    division: Optional[str] = None
+    completion_percent: Optional[float] = 0
 
 @app.post("/admin/ingest")
 def ingest_project(payload: IngestPayload, db: Session = Depends(get_db)):
@@ -224,8 +366,10 @@ def ingest_project(payload: IngestPayload, db: Session = Depends(get_db)):
         district=payload.district,
         geometry=search_geom,
         is_verified=is_verified,
-        # FIX #4: Actually persist the budget value that was sent in the payload.
         budget=payload.budget,
+        contractor=payload.contractor,
+        division=payload.division,
+        completion_percent=payload.completion_percent or 0,
     )
     db.add(db_project)
     db.commit()
