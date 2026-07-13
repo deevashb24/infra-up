@@ -5,7 +5,7 @@ import os
 # FIX #10: Expose a psycopg2-safe URL for the raw LISTEN/NOTIFY connection.
 # Strips any async driver prefix (e.g. postgresql+asyncpg://) so psycopg2.connect()
 # never receives an incompatible URL.
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/civic_tech")
+SQLALCHEMY_DATABASE_URL = os.environ["DATABASE_URL"]
 
 def _make_psycopg2_url(url: str) -> str:
     """Normalise any SQLAlchemy async-driver URL to a plain psycopg2-compatible one."""

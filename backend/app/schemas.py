@@ -1,25 +1,25 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 from .models import AuthorityEnum, ProjectTypeEnum, StatusEnum, ImpactEnum
 
 class ProjectBase(BaseModel):
-    title: str
-    description: Optional[str] = None
+    title: str = Field(..., max_length=200, strip_whitespace=True)
+    description: Optional[str] = Field(None, max_length=2000, strip_whitespace=True)
     permit_type: ProjectTypeEnum
     status: StatusEnum
     project_authority: AuthorityEnum
-    district: str
+    district: str = Field(..., max_length=100, strip_whitespace=True)
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     impact_level: ImpactEnum
-    longitude: float
-    latitude: float
-    budget: Optional[float] = None
-    contractor: Optional[str] = None
-    completion_percent: Optional[float] = 0
-    division: Optional[str] = None
+    longitude: float = Field(..., ge=-180, le=180)
+    latitude: float = Field(..., ge=-90, le=90)
+    budget: Optional[float] = Field(None, ge=0)
+    contractor: Optional[str] = Field(None, max_length=200, strip_whitespace=True)
+    completion_percent: Optional[float] = Field(0, ge=0, le=100)
+    division: Optional[str] = Field(None, max_length=100, strip_whitespace=True)
 
 class ProjectCreate(ProjectBase):
     pass
@@ -30,9 +30,9 @@ class ProjectResponse(ProjectBase):
     model_config = ConfigDict(from_attributes=True)
 
 class ReportCreate(BaseModel):
-    description: str
-    longitude: float
-    latitude: float
+    description: str = Field(..., max_length=2000, strip_whitespace=True)
+    longitude: float = Field(..., ge=-180, le=180)
+    latitude: float = Field(..., ge=-90, le=90)
 
 class ReportResponse(ReportCreate):
     id: UUID

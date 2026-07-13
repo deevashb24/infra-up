@@ -173,7 +173,7 @@ function DashboardMap({ data, division }: { data: ProjectNode[]; division: strin
   ];
 
   return (
-    <div className="relative w-full h-full rounded-2xl overflow-hidden">
+    <div className="relative flex-1 w-full rounded-2xl overflow-hidden border border-slate-800">
       <div ref={ref} className="absolute inset-0" />
       <div className="absolute top-0 left-0 right-0 h-20 bg-gradient-to-b from-slate-900/60 to-transparent pointer-events-none z-10" />
       <div className="absolute top-4 left-4 z-20 pointer-events-none">
@@ -427,7 +427,7 @@ export default function Dashboard() {
         </div>
 
         {/* ── Right Panel: Map ── */}
-        <div className="flex-1 min-h-[500px] xl:min-h-0 relative">
+        <div className="flex-1 min-h-[500px] xl:min-h-0 relative p-4 flex flex-col bg-slate-950">
           <DashboardMap data={data} division={division} />
         </div>
 
